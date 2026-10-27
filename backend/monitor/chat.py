@@ -1,4 +1,5 @@
-"""Chatbot: Gemini (free tier) answers from the live data; falls back to a template summary."""
+
+"""Chatbot: Groq answers from live air-quality data."""
 import json
 import logging
 
@@ -7,65 +8,118 @@ from django.conf import settings
 
 log = logging.getLogger(__name__)
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 SYSTEM_PROMPT = (
-    "You are the assistant for a room-level air quality monitor in a college hostel in Greater Noida. "
-    "Answer ONLY from the JSON data provided. Never invent numbers. If something is missing, say so. "
+    "You are the assistant for a room-level air quality monitor "
+    "in a college hostel in Greater Noida. "
+    "Answer ONLY from the JSON data provided. Never invent numbers. "
+    "If something is missing, say so. "
     "Keep replies short (2-4 sentences) in plain, friendly English. "
-    "If data_source for indoor is 'simulated', mention once that indoor values are demo data. "
-    "Thresholds: CO2 under 800 ppm is good, 800-1200 is stuffy, above 1200 is poor. "
-    "PM2.5 under 60 ug/m3 is good, 60-120 is unhealthy for sensitive people, above 120 is unhealthy."
+    "If indoor_source is 'simulated', mention that indoor values "
+    "are demo data. "
+    "CO2 under 800 ppm is good, 800-1200 is stuffy, "
+    "above 1200 is poor. "
+    "PM2.5 under 60 ug/m3 is good, 60-120 is unhealthy "
+    "for sensitive people, above 120 is unhealthy."
 )
 
 
 def template_summary(ctx):
-    """Always-available fallback, built only from the data."""
+    """Fallback response built from available data."""
     indoor, outdoor = ctx.get("indoor"), ctx.get("outdoor")
+
     if not indoor:
         return "I don't have any indoor readings yet."
+
     parts = [
-        f"Indoors, CO2 is {indoor['co2']} ppm and PM2.5 is {indoor['pm25']} ug/m3 "
+        f"Indoors, CO2 is {indoor['co2']} ppm and "
+        f"PM2.5 is {indoor['pm25']} ug/m3 "
         f"(status: {ctx['level']})."
     ]
+
     if outdoor:
-        parts.append(f"Outside, PM2.5 is {outdoor['pm25']} ug/m3 (AQI {outdoor['aqi']}).")
+        parts.append(
+            f"Outside, PM2.5 is {outdoor['pm25']} ug/m3 "
+            f"(AQI {outdoor['aqi']})."
+        )
+
     parts.append(ctx["advice"])
+
     fc = ctx.get("forecast")
     if fc:
         parts.append(
-            f"In about {fc['minutes_ahead']} minutes CO2 is expected to be around {fc['co2']} ppm "
-            f"({fc['co2_trend']}) and PM2.5 around {fc['pm25']} ug/m3 ({fc['pm25_trend']})."
+            f"In about {fc['minutes_ahead']} minutes CO2 "
+            f"is expected to be around {fc['co2']} ppm "
+            f"({fc['co2_trend']}) and PM2.5 around "
+            f"{fc['pm25']} ug/m3 ({fc['pm25_trend']})."
         )
+
     if ctx.get("indoor_source") == "simulated":
-        parts.append("Note: indoor values are demo data until the sensor node is connected.")
+        parts.append(
+            "Note: indoor values are demo data until "
+            "the sensor node is connected."
+        )
+
     return " ".join(parts)
 
 
 def answer(message, ctx):
-    """Returns (reply_text, engine) where engine is 'gemini' or 'template'."""
-    key = settings.GEMINI_API_KEY
+    """Returns (reply_text, engine): groq or template."""
+    key = getattr(settings, "GROQ_API_KEY", "")
+    model = getattr(
+    settings,
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b",
+)
+
     if not key:
+        log.warning("GROQ_API_KEY is missing; using template.")
         return template_summary(ctx), "template"
+
     try:
         body = {
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{
-                "role": "user",
-                "parts": [{"text": "DATA:\n" + json.dumps(ctx, default=str) + "\n\nQUESTION: " + message}],
-            }],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300},
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "DATA:\n"
+                        + json.dumps(ctx, default=str)
+                        + "\n\nQUESTION: "
+                        + message
+                    ),
+                },
+            ],
+            "temperature": 0.3,
+            "max_tokens": 300,
         }
+
         resp = requests.post(
-            GEMINI_URL.format(model=settings.GEMINI_MODEL),
-            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
             json=body,
-            timeout=12,
+            timeout=20,
         )
         resp.raise_for_status()
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if text:
-            return text, "gemini"
-    except Exception as exc:
-        log.warning("Gemini call failed: %s", exc)
+
+        result = resp.json()
+        reply = (
+            result["choices"][0]["message"]["content"] or ""
+        ).strip()
+
+        if reply:
+            return reply, "groq"
+
+        log.warning("Groq returned an empty response.")
+
+    except requests.RequestException:
+        log.exception("Groq API request failed.")
+    except (KeyError, IndexError, TypeError, ValueError):
+        log.exception("Unexpected Groq API response.")
+
     return template_summary(ctx), "template"
