@@ -6,37 +6,60 @@ Django settings for aq_project project.
 import os
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
-# Build paths inside the project.
+# Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load the .env file in the outer project root for local development.
+# Render will use dashboard environment variables instead.
 load_dotenv(BASE_DIR.parent / ".env")
 
-# Load environment variables from the .env file beside manage.py.
-load_dotenv(BASE_DIR / ".env")
+# --------------------------------------------------
+# Security
+# --------------------------------------------------
 
-
-# Security settings
-# Replace this with a newly generated secret key.
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-change-this-before-deployment",
+DEBUG = os.getenv("DEBUG", "False").strip().lower() in (
+    "true", "1", "yes"
 )
 
-# DEBUG = os.getenv("DJANGO_DEBUG", "True").lower() in (
-#     "true", "1", "yes"
-# )
-DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
+SECRET_KEY = os.getenv(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-local-development-only",
+)
 
 ALLOWED_HOSTS = [
     host.strip()
-    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",")
+    for host in os.getenv(
+        "DJANGO_ALLOWED_HOSTS",
+        "localhost,127.0.0.1",
+    ).split(",")
     if host.strip()
 ]
 
+# Render automatically provides this variable for web services.
+render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
 
-# Groq API settings
+if render_hostname and render_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_hostname)
+
+# Origins allowed to submit requests requiring CSRF validation.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "CSRF_TRUSTED_ORIGINS", ""
+    ).split(",")
+    if origin.strip()
+]
+
+# Recognize HTTPS when running behind Render's proxy.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# --------------------------------------------------
+# Groq chatbot
+# --------------------------------------------------
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
 GROQ_MODEL = os.getenv(
@@ -44,27 +67,31 @@ GROQ_MODEL = os.getenv(
     "openai/gpt-oss-120b",
 )
 
+# Legacy Gemini settings, retained for compatibility.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-# Air quality project settings
-# API key used by ESP32 / simulator in the X-API-Key header.
-API_KEY = os.environ.get("AQ_API_KEY", "demo-key")
-
-# Legacy Gemini settings; retained for compatibility.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get(
+GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-2.5-flash",
 )
 
-# Outdoor air-quality location: Greater Noida.
-OUTDOOR_LAT = float(os.environ.get("OUTDOOR_LAT", "28.4744"))
-OUTDOOR_LON = float(os.environ.get("OUTDOOR_LON", "77.5040"))
+# --------------------------------------------------
+# Air-quality project settings
+# --------------------------------------------------
+
+API_KEY = os.getenv("AQ_API_KEY", "demo-key")
+
+OUTDOOR_LAT = float(os.getenv("OUTDOOR_LAT", "28.4744"))
+OUTDOOR_LON = float(os.getenv("OUTDOOR_LON", "77.5040"))
+
 OUTDOOR_REFRESH_MIN = int(
-    os.environ.get("OUTDOOR_REFRESH_MIN", "20")
+    os.getenv("OUTDOOR_REFRESH_MIN", "20")
 )
 
+# --------------------------------------------------
+# Applications
+# --------------------------------------------------
 
-# Application definition
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -75,9 +102,11 @@ INSTALLED_APPS = [
     "monitor",
 ]
 
+# WhiteNoise serves collected static files in production.
 MIDDLEWARE = [
     "monitor.middleware.SimpleCorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -105,17 +134,34 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "aq_project.wsgi.application"
 
-
+# --------------------------------------------------
 # Database
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# --------------------------------------------------
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=not DEBUG,
+        )
     }
-}
+else:
+    # Convenient for local development.
+    # SQLite on Render's ephemeral filesystem is not persistent.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
-
+# --------------------------------------------------
 # Password validation
+# --------------------------------------------------
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": (
@@ -138,32 +184,56 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": (
             "django.contrib.auth.password_validation."
+            "CommonPasswordValidator"
+        ),
+    },
+    {
+        "NAME": (
+            "django.contrib.auth.password_validation."
             "NumericPasswordValidator"
         ),
     },
 ]
 
-
+# --------------------------------------------------
 # Internationalization
-LANGUAGE_CODE = "en-us"
+# --------------------------------------------------
 
+LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 
 USE_I18N = True
-
 USE_TZ = True
 
-
+# --------------------------------------------------
 # Static files
-STATIC_URL = "static/"
+# --------------------------------------------------
 
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
-
-# Email
-MAILERS = {
+STORAGES = {
     "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
         "BACKEND": (
-            "django.core.mail.backends.console.EmailBackend"
+            "whitenoise.storage.CompressedManifestStaticFilesStorage"
         ),
     },
 }
+
+# --------------------------------------------------
+# Email
+# --------------------------------------------------
+
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+# Keep compatibility with code that uses this custom setting.
+MAILERS = {
+    "default": {
+        "BACKEND": "django.core.mail.backends.console.EmailBackend",
+    },
+}
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
