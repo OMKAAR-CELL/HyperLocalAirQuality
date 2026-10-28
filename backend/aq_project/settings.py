@@ -229,11 +229,4 @@ STORAGES = {
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
-# Keep compatibility with code that uses this custom setting.
-MAILERS = {
-    "default": {
-        "BACKEND": "django.core.mail.backends.console.EmailBackend",
-    },
-}
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
