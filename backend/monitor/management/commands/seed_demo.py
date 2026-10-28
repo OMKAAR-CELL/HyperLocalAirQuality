@@ -9,7 +9,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from monitor.models import OutdoorReading, Reading
-from simmodel import IndoorState, outdoor_pm25
+from monitor.simmodel import IndoorState, outdoor_pm25
 
 
 class Command(BaseCommand):
