@@ -102,6 +102,8 @@ INSTALLED_APPS = [
     "monitor",
 ]
 
+WAQI_TOKEN = os.getenv("WAQI_TOKEN", "").strip()
+
 # WhiteNoise serves collected static files in production.
 MIDDLEWARE = [
     "monitor.middleware.SimpleCorsMiddleware",
